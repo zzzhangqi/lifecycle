@@ -5,241 +5,57 @@ on:
     branches:
       - main
       - 'release/**'
-  pull_request:
-    branches:
-      - main
-      - 'release/**'
+  workflow_dispatch:
 
 jobs:
-  test-linux-amd64:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: '0'
-      - name: Setup go
-        uses: actions/setup-go@v5
-        with:
-          check-latest: true
-          go-version-file: 'go.mod'
-      - name: Install jq
-        run: |
-          mkdir -p deps/bin
-          curl -s -L -o deps/bin/jq https://github.com/stedolan/jq/releases/download/jq-1.6/jq-linux64
-          chmod +x deps/bin/jq
-          echo "${PWD}/deps/bin" >> $GITHUB_PATH
-      - name: Test
-        env:
-          TEST_COVERAGE: 1
-        run: make test
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          file: ./out/tests/coverage-unit.txt
-          flags: unit,os_linux
-          fail_ci_if_error: true
-          verbose: true
-  test-linux-arm64:
-    runs-on: ubuntu-24.04-arm
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: '0'
-      - name: Setup go
-        uses: actions/setup-go@v5
-        with:
-          check-latest: true
-          go-version-file: 'go.mod'
-      - name: Test
-        run: |
-          make format || true
-          make test
   build-and-publish:
-    needs:
-      - test-linux-amd64
-      - test-linux-arm64
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write
     steps:
       - uses: actions/checkout@v5
         with:
-          fetch-depth: 0 # fetch all history for all branches and tags
+          fetch-depth: 0
       - name: Setup go
         uses: actions/setup-go@v5
         with:
           check-latest: true
           go-version-file: 'go.mod'
-      - name: Install Cosign
-        uses: sigstore/cosign-installer@v3
       - name: Set version
         run: |
-          echo "LIFECYCLE_VERSION=$(go run tools/version/main.go)" | tee -a $GITHUB_ENV version.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: version
-          path: version.txt
-      - name: Set tag
-        run: |
-          echo "LIFECYCLE_IMAGE_TAG=$(git describe --always --abbrev=7)" >> tag.txt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tag
-          path: tag.txt
+          echo "LIFECYCLE_VERSION=$(go run tools/version/main.go)" | tee -a $GITHUB_ENV
       - name: Build
         run: |
           make clean
-          make build
-          make package
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-x86-64
-          path: out/lifecycle-v*+linux.x86-64.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-x86-64-sha256
-          path: out/lifecycle-v*+linux.x86-64.tgz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-arm64
-          path: out/lifecycle-v*+linux.arm64.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-arm64-sha256
-          path: out/lifecycle-v*+linux.arm64.tgz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-ppc64le
-          path: out/lifecycle-v*+linux.ppc64le.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-ppc64le-sha256
-          path: out/lifecycle-v*+linux.ppc64le.tgz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-s390x
-          path: out/lifecycle-v*+linux.s390x.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-linux-s390x-sha256
-          path: out/lifecycle-v*+linux.s390x.tgz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-freebsd-amd64
-          path: out/lifecycle-v*+freebsd.amd64.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-freebsd-amd64-sha256
-          path: out/lifecycle-v*+freebsd.amd64.tgz.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-freebsd-arm64
-          path: out/lifecycle-v*+freebsd.arm64.tgz
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-freebsd-arm64-sha256
-          path: out/lifecycle-v*+freebsd.arm64.tgz.sha256
-      - name: Generate SBOM JSON
-        uses: CycloneDX/gh-gomod-generate-sbom@v2
-        with:
-          args: mod -licenses -json -output lifecycle-v${{ env.LIFECYCLE_VERSION }}-bom.cdx.json
-          version: ^v1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-bom-cdx
-          path: lifecycle-v*-bom.cdx.json
-      - name: Calculate SBOM sha
-        run: |
-          shasum -a 256 lifecycle-v${{ env.LIFECYCLE_VERSION }}-bom.cdx.json > lifecycle-v${{ env.LIFECYCLE_VERSION }}-bom.cdx.json.sha256
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lifecycle-bom-cdx-sha256
-          path: lifecycle-v*-bom.cdx.json.sha256
+          make build-linux-amd64 build-linux-arm64
+          make package-linux-amd64 package-linux-arm64
       - uses: azure/docker-login@v2
-        if: github.event_name == 'push'
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-      - uses: actions/download-artifact@v5
-        with:
-          name: tag
-      - name: Set env
-        run: |
-          cat tag.txt >> $GITHUB_ENV
       - name: Publish images
-        if: github.event_name == 'push'
         run: |
-          DOCKER_CLI_EXPERIMENTAL=enabled
           LIFECYCLE_IMAGE_TAG=$(git describe --always --abbrev=7)
 
-          LINUX_AMD64_SHA=$(go run ./tools/image/main.go -lifecyclePath ./out/lifecycle-v*+linux.x86-64.tgz -tag buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-x86-64 | awk '{print $NF}')
-          echo "LINUX_AMD64_SHA: $LINUX_AMD64_SHA"
+          LINUX_AMD64_SHA=$(go run ./tools/image/main.go \
+            -lifecyclePath ./out/lifecycle-v*+linux.x86-64.tgz \
+            -tag rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-x86-64 \
+            | awk '{print $NF}')
 
-          LINUX_ARM64_SHA=$(go run ./tools/image/main.go -lifecyclePath ./out/lifecycle-v*+linux.arm64.tgz -tag buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-arm64 -arch arm64 | awk '{print $NF}')
-          echo "LINUX_ARM64_SHA: $LINUX_ARM64_SHA"
+          LINUX_ARM64_SHA=$(go run ./tools/image/main.go \
+            -lifecyclePath ./out/lifecycle-v*+linux.arm64.tgz \
+            -tag rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-arm64 \
+            -arch arm64 \
+            | awk '{print $NF}')
 
-          LINUX_PPC64LE_SHA=$(go run ./tools/image/main.go -lifecyclePath ./out/lifecycle-v*+linux.ppc64le.tgz -tag buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-ppc64le -arch ppc64le | awk '{print $NF}')
-          echo "LINUX_PPC64LE_SHA: LINUX_PPC64LE_SHA"
+          # version tag
+          docker manifest create --amend rainbond/lifecycle:${LIFECYCLE_VERSION} \
+            rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-x86-64@${LINUX_AMD64_SHA} \
+            rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-arm64@${LINUX_ARM64_SHA}
+          docker manifest push rainbond/lifecycle:${LIFECYCLE_VERSION}
 
-          LINUX_S390X_SHA=$(go run ./tools/image/main.go -lifecyclePath ./out/lifecycle-v*+linux.s390x.tgz -tag buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-s390x -arch s390x | awk '{print $NF}')
-          echo "LINUX_S390X_SHA: $LINUX_S390X_SHA"
+          # latest tag
+          docker manifest create --amend rainbond/lifecycle:latest \
+            rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-x86-64@${LINUX_AMD64_SHA} \
+            rainbond/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-arm64@${LINUX_ARM64_SHA}
+          docker manifest push rainbond/lifecycle:latest
 
-          docker manifest create buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG} \
-              buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-x86-64@${LINUX_AMD64_SHA} \
-              buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-arm64@${LINUX_ARM64_SHA} \
-              buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-ppc64le@${LINUX_PPC64LE_SHA} \
-              buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}-linux-s390x@${LINUX_S390X_SHA}
-
-          MANIFEST_SHA=$(docker manifest push buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG})
-          echo "MANIFEST_SHA: $MANIFEST_SHA"
-
-          cosign sign -r -y \
-            -a tag=${LIFECYCLE_IMAGE_TAG} \
-            buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}@${MANIFEST_SHA}
-          cosign verify \
-            --certificate-identity-regexp "https://github.com/${{ github.repository_owner }}/lifecycle/.github/workflows/build.yml" \
-            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-            -a tag=${LIFECYCLE_IMAGE_TAG} \
-            buildpacksio/lifecycle:${LIFECYCLE_IMAGE_TAG}
-      - name: Scan image
-        if: github.event_name == 'push'
-        uses: anchore/scan-action@v6
-        with:
-          image: buildpacksio/lifecycle:${{ env.LIFECYCLE_IMAGE_TAG }}
-  pack-acceptance-linux:
-    if: github.event_name == 'push'
-    needs: build-and-publish
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          repository: 'buildpacks/pack'
-          path: 'pack'
-          ref: 'main'
-          fetch-depth: 0 # fetch all history for all branches and tags
-      - name: Setup go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: 'pack/go.mod'
-      - uses: actions/download-artifact@v5
-        with:
-          name: version
-      - uses: actions/download-artifact@v5
-        with:
-          name: tag
-      - name: Set env
-        run: |
-          cat version.txt >> $GITHUB_ENV
-          cat tag.txt >> $GITHUB_ENV
-      - uses: actions/download-artifact@v5
-        with:
-          name: lifecycle-linux-x86-64
-          path: pack
-      - name: Run pack acceptance
-        run: |
-          cd pack
-          git checkout $(git describe --abbrev=0 --tags) # check out the latest tag
-          LIFECYCLE_PATH="../lifecycle-v${{ env.LIFECYCLE_VERSION }}+linux.x86-64.tgz" \
-          LIFECYCLE_IMAGE="buildpacksio/lifecycle:${{ env.LIFECYCLE_IMAGE_TAG }}" \
-          make acceptance
+          echo "Pushed: rainbond/lifecycle:${LIFECYCLE_VERSION}, rainbond/lifecycle:latest"
